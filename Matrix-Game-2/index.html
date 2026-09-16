@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>世界模型 · 神庙逃亡</title>
+<style>
+  :root { --bg:#0e0f12; --panel:#17191e; --line:#2a2d35; --fg:#e8e9ec; --dim:#8b8f99; --acc:#f5a524; --ok:#3ecf8e; --err:#ff6b6b; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; }
+  .wrap { max-width:980px; margin:0 auto; padding:20px 16px 40px; }
+  h1 { font-size:18px; margin:0 0 4px; letter-spacing:.5px; }
+  .sub { color:var(--dim); font-size:12px; margin-bottom:14px; }
+  .stage { position:relative; background:#000; border:1px solid var(--line); border-radius:10px; overflow:hidden; aspect-ratio:640/352; }
+  .stage img { width:100%; height:100%; object-fit:contain; display:block; image-rendering:auto; }
+  .overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:20px;
+             background:rgba(0,0,0,.55); font-size:15px; }
+  .overlay[hidden] { display:none; }
+  .badge { position:absolute; left:10px; top:10px; background:rgba(0,0,0,.6); border:1px solid var(--line); border-radius:6px; padding:3px 8px; font-size:12px; }
+  .keyflash { position:absolute; right:10px; top:10px; background:var(--acc); color:#000; font-weight:700; border-radius:6px; padding:3px 10px; font-size:13px; }
+  .keyflash[hidden] { display:none; }
+  .status { margin:12px 0 10px; padding:10px 12px; background:var(--panel); border:1px solid var(--line); border-radius:8px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
+  .dot.busy { background:var(--acc); animation:pulse 1s infinite; }
+  .dot.ok { background:var(--ok); }
+  .dot.err { background:var(--err); }
+  @keyframes pulse { 50% { opacity:.3; } }
+  .stats { color:var(--dim); font-size:12px; margin-left:auto; font-variant-numeric:tabular-nums; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin:10px 0; }
+  button, select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 12px; font:inherit; cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#000; border-color:var(--acc); font-weight:600; }
+  button.sel { border-color:var(--acc); color:var(--acc); }
+  button:disabled { opacity:.45; cursor:not-allowed; }
+  .keys { display:grid; grid-template-columns:repeat(auto-fill, minmax(118px, 1fr)); gap:8px; margin-top:6px; }
+  .key { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; align-items:center; gap:8px; user-select:none; cursor:pointer; }
+  .key b { display:inline-flex; width:26px; height:26px; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:5px; background:#0b0c0f; font-size:13px; }
+  .key.hit { border-color:var(--acc); }
+  .label { color:var(--dim); font-size:12px; }
+  .note { color:var(--dim); font-size:12px; margin-top:14px; line-height:1.7; }
+  .err { color:var(--err); white-space:pre-wrap; font-size:12px; margin-top:8px; }
+  label.auto { display:flex; gap:6px; align-items:center; color:var(--dim); font-size:13px; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">世界模型 · 神庙逃亡</h1>
+  <div class="sub">Matrix-Game 2.0 · 跑在 1 张昇腾 910B 上 · 每按一次键,模型现场生成下一段画面</div>
+
+  <div class="stage">
+    <img id="screen" alt="">
+    <div class="badge" id="badge">未开局</div>
+    <div class="keyflash" id="keyflash" hidden></div>
+    <div class="overlay" id="overlay">正在连接…</div>
+  </div>
+
+  <div class="status">
+    <span class="dot busy" id="dot"></span>
+    <span id="statusText">正在连接服务端…</span>
+    <span class="stats" id="stats"></span>
+  </div>
+
+  <div class="row">
+    <span class="label">场景</span>
+    <span id="scenes"></span>
+    <span class="label">本局长度</span>
+    <select id="blocks">
+      <option value="8">8 段(约 8 秒画面)</option>
+      <option value="15" selected>15 段(约 15 秒)</option>
+      <option value="30">30 段(约 30 秒)</option>
+    </select>
+    <button class="primary" id="startBtn" disabled>开始新一局</button>
+    <button id="resetBtn" disabled>结束本局</button>
+    <label class="auto"><input type="checkbox" id="auto"> 自动续跑(空格切换)</label>
+    <label class="auto"><input type="checkbox" id="smooth" checked> 平滑播放</label>
+  </div>
+
+  <div class="label">按键(点击也可以)</div>
+  <div class="keys" id="keys"></div>
+
+  <div class="note" id="note"></div>
+  <div class="err" id="err"></div>
+</div>
+
+<script>
+const LEGEND = {
+  templerun: { title: "神庙逃亡", dir: "temple_run", keyboard: [["W","跳跃"],["S","滑铲"],["A","向左移"],["D","向右移"],["Z","左转弯"],["C","右转弯"],["Q","直跑"]], mouse: [] },
+  universal: { title: "通用场景", dir: "universal", keyboard: [["W","前进"],["S","后退"],["A","左移"],["D","右移"],["Q","不动"]], mouse: [["I","镜头上"],["K","镜头下"],["J","镜头左"],["L","镜头右"],["U","镜头不动"]] },
+  gta_drive: { title: "GTA 驾驶", dir: "gta_drive", keyboard: [["W","油门"],["S","刹车"],["Q","滑行"]], mouse: [["A","左打方向"],["D","右打方向"]] },
+};
+const S = { mode: "templerun", ready: false, waiting: false, inSession: false, pending: null,
+            lastKey: "q", mouse: null, scene: 0, total: 0, done: 0, genMs: [], waitStart: 0 };
+const $ = id => document.getElementById(id);
+const frameQ = [];
+
+function legend() { return LEGEND[S.mode]; }
+
+function renderLegend() {
+  const L = legend();
+  $("title").textContent = "世界模型 · " + L.title;
+  document.title = "世界模型 · " + L.title;
+  const k = $("keys"); k.innerHTML = "";
+  for (const [key, name] of [...L.keyboard, ...L.mouse]) {
+    const d = document.createElement("div");
+    d.className = "key"; d.dataset.k = key.toLowerCase();
+    d.innerHTML = `<b>${key}</b><span>${name}</span>`;
+    d.onclick = () => press(key.toLowerCase());
+    k.appendChild(d);
+  }
+  const sc = $("scenes"); sc.innerHTML = "";
+  for (let i = 0; i < 6; i++) {
+    const b = document.createElement("button");
+    b.textContent = String(i + 1); b.className = i === S.scene ? "sel" : "";
+    b.onclick = () => { S.scene = i; renderLegend(); };
+    sc.appendChild(b);
+  }
+  $("note").innerHTML = S.mode === "templerun"
+    ? "玩法:开局后先按一个键。模型每收到一次按键会生成约 1 秒画面;生成期间再按的键会被「预约」到下一段。勾上自动续跑,就会一直沿用上一个动作往下跑。<br>画面由模型现场想象出来,不是游戏引擎渲染,所以会有漂移、穿模和场景变形,这正是世界模型的样子。"
+    : "玩法:键盘键决定移动,镜头键决定视角,每段各取你最后按下的那个;生成期间按的键会预约到下一段。";
+}
+
+function setStatus(text, kind) {
+  $("statusText").textContent = text;
+  $("dot").className = "dot " + (kind || "");
+}
+function overlay(text) { const o = $("overlay"); if (text) { o.textContent = text; o.hidden = false; } else o.hidden = true; }
+
+function updateStats() {
+  const n = S.genMs.length;
+  const last = n ? (S.genMs[n - 1] / 1000).toFixed(1) : "–";
+  const avg = n ? (S.genMs.reduce((a, b) => a + b, 0) / n / 1000).toFixed(1) : "–";
+  const fps = $("smooth") && $("smooth").checked ? (1000 / PLAY.perFrame).toFixed(1) : "12";
+  $("stats").textContent = S.inSession ? `第 ${S.done} / ${S.total} 段 · 上一段 ${last} 秒 · 平均 ${avg} 秒 · 播放 ${fps} 帧/秒` : (n ? `上一局平均每段 ${avg} 秒` : "");
+  $("badge").textContent = S.inSession ? `第 ${S.done} / ${S.total} 段` : (S.ready ? "未开局" : "加载中");
+}
+
+function keyboardKeys() { return legend().keyboard.map(x => x[0].toLowerCase()); }
+function mouseKeys() { return legend().mouse.map(x => x[0].toLowerCase()); }
+
+async function cmd(body) {
+  try { await fetch("/cmd", { method: "POST", body: JSON.stringify(body) }); } catch (e) { $("err").textContent = "发送失败:" + e; }
+}
+
+function flash(k) {
+  const f = $("keyflash"); f.textContent = k.toUpperCase(); f.hidden = false;
+  document.querySelectorAll(".key").forEach(el => el.classList.toggle("hit", el.dataset.k === k));
+}
+
+function sendKey(k) {
+  S.waiting = false; S.pending = null; S.lastKey = k; S.waitStart = performance.now();
+  PLAY.keySentAt = performance.now();
+  flash(k + (S.mouse ? "+" + S.mouse : ""));
+  cmd({ cmd: "KEY", k, m: S.mouse });
+  setStatus(`生成中…(动作 ${k.toUpperCase()}${S.mouse ? " + 镜头 " + S.mouse.toUpperCase() : ""})`, "busy");
+}
+
+function press(k) {
+  if (!S.inSession) return;
+  if (mouseKeys().includes(k) && !(S.mode === "gta_drive" && keyboardKeys().includes(k))) {
+    S.mouse = k;
+    if (S.waiting) sendKey(S.lastKey);
+    return;
+  }
+  if (!keyboardKeys().includes(k)) return;
+  if (S.waiting) sendKey(k);
+  else { S.pending = k; setStatus(`生成中… 已预约下一段:${k.toUpperCase()}`, "busy"); }
+}
+
+function onWait() {
+  S.waiting = true;
+  const k = S.pending || ($("auto").checked ? S.lastKey : null);
+  if (k) sendKey(k);
+  else { setStatus("该你了:按一个键,模型生成下一段", "ok"); $("keyflash").hidden = true; }
+}
+
+// 平滑播放:每段 12 帧按「发出按键到该段送达」的实测间隔匀速拉开,消除「动 1 秒、停一下」的顿挫。
+// 间隔只统计按键发出之后的等待,不含玩家思考时间;玩家晚按时仍会停在最后一帧,这是真实等待。
+const PLAY = { est: 1.45, perFrame: 1000 / 12, keySentAt: 0, timer: null };
+function playTick() {
+  PLAY.timer = null;
+  if (!frameQ.length) return;
+  $("screen").src = frameQ.shift();
+  PLAY.timer = setTimeout(playTick, $("smooth").checked ? PLAY.perFrame : 1000 / 12);
+}
+function startPlayback() { if (!PLAY.timer) PLAY.timer = setTimeout(playTick, 0); }
+setInterval(() => {
+  if (S.inSession && !S.waiting && S.waitStart) {
+    const s = ((performance.now() - S.waitStart) / 1000).toFixed(1);
+    if (!S.pending) $("statusText").textContent = $("statusText").textContent.replace(/(,已等 [\d.]+ 秒)?$/, `,已等 ${s} 秒`);
+  }
+}, 100);
+
+function handle(m) {
+  switch (m.type) {
+    case "status":
+      if (m.mode) { S.mode = m.mode; renderLegend(); }
+      setStatus(m.text, "busy"); overlay(m.text); break;
+    case "ready":
+      S.mode = m.mode; S.ready = true; renderLegend();
+      $("startBtn").disabled = false;
+      setStatus(`模型就绪(加载用了 ${(m.load_ms / 1000).toFixed(0)} 秒)。选个场景,点「开始新一局」`, "ok");
+      overlay("模型就绪 · 点「开始新一局」"); updateStats(); break;
+    case "session":
+      S.inSession = true; S.total = m.blocks; S.done = 0; S.genMs = []; S.pending = null;
+      $("resetBtn").disabled = false; overlay(null); updateStats(); break;
+    case "wait":
+      overlay(null); onWait(); break;
+    case "chunk":
+      // 服务端逐隐帧解码,一个隐帧解完就发它那几张画面。分片一到就入队开播,不等整段收齐,
+      // 「按键到看见第一张画面」因此比整段回传提前约 0.3 秒。
+      // 帧按 URL 从本地中转取二进制 JPEG,不走 base64;先预取,避免播放时才发起请求
+      for (const u of m.urls) { const im = new Image(); im.src = u; frameQ.push(u); }
+      startPlayback(); break;
+    case "block":
+      S.done = m.idx + 1; S.genMs.push(m.gen_ms);
+      // 节奏仍按「整段收齐」的实测间隔估:队列要匀速铺满到下一段到达为止,按首片估会播太快然后卡住
+      if (PLAY.keySentAt) {
+        const iv = (performance.now() - PLAY.keySentAt) / 1000;
+        PLAY.est = Math.min(3, Math.max(0.8, 0.35 * iv + 0.65 * PLAY.est));
+        PLAY.keySentAt = 0;
+      }
+      PLAY.perFrame = Math.min(1000 / 5, Math.max(1000 / 12, PLAY.est * 1000 / (m.n || 12)));
+      S.waitStart = 0; updateStats(); break;
+    case "done":
+    case "reset_ok":
+      // 能收到「本局结束 / 已结束」就说明模型早已就绪。新打开的页面只拿到最后一条状态、收不到当初的 ready,
+      // 不在这里补上就会一直显示「加载中」且开局按钮不可点。
+      if (!S.ready) { S.ready = true; renderLegend(); }
+      overlay("模型就绪 · 点「开始新一局」");
+      S.inSession = false; S.waiting = false; S.pending = null; $("keyflash").hidden = true;
+      $("resetBtn").disabled = true; $("startBtn").disabled = !S.ready;
+      setStatus(m.type === "done" ? "本局结束。点「开始新一局」再来一次" : "已结束本局", "ok");
+      updateStats(); break;
+    case "err":
+      $("err").textContent = "服务端:" + m.text; break;
+    case "closed":
+      S.ready = false; S.inSession = false; $("startBtn").disabled = true; $("resetBtn").disabled = true;
+      setStatus(m.text, "err"); overlay(m.text + ",请检查服务端日志");
+      if (m.log) $("err").textContent = m.log; break;
+  }
+}
+
+$("startBtn").onclick = () => {
+  if (!S.ready) return;
+  $("err").textContent = ""; $("startBtn").disabled = true;
+  const img = `demo_images/${legend().dir}/000${S.scene}.png`;
+  setStatus("开局:编码首帧中…", "busy"); overlay("开局中…");
+  cmd({ cmd: "START", img, blocks: +$("blocks").value });
+};
+$("resetBtn").onclick = () => cmd({ cmd: "RESET" });
+
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); $("auto").checked = !$("auto").checked; if ($("auto").checked && S.waiting) onWait(); return; }
+  press(e.key.toLowerCase());
+});
+
+renderLegend(); updateStats();
+const es = new EventSource("/events");
+es.onmessage = e => handle(JSON.parse(e.data));
+</script>
+</body>
+</html>
