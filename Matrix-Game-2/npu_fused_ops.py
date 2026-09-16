@@ -15,13 +15,23 @@
    约束(jit_compile=False):input 为 BSND,B*N<1000,D<896 且为偶数,r1/r2 必须是 1S1D。
    本模型 B=1、N=12、D=128,满足。
    rope_mode="fp32":在 float32 下算(与当前生产路径实际精度一致);"bf16":直接在原精度算。
-   cos/sin 表从模型自己的 freqs 取实部虚部,按 (起始帧, f, h, w, 精度, 设备) 缓存。
+   cos/sin 表从模型自己的 freqs 取实部虚部,只缓存最近一条(见 _ROPE 处的说明)。
 """
+import weakref
+
 import torch
 import torch_npu
 
 _ONES = {}
-_ROPE = {}
+
+# cos/sin 只留最近一条。key 里带 start_frame,而 start_frame 每块 +num_frame_per_block
+# 单调递增(causal_inference.py 里不回绕,local_attn_size 只裁 KV 缓存),
+# 所以跨块必然 miss,留多条毫无收益、只会按块漏显存:
+# 本模型 f*h*w=2640、D=128,cos+sin 每条约 2.7 MB,约 370 次按键就是 1 GB。
+# 命中只发生在同一块内的 8 次调用(q/k × 去噪步数),单条足够。
+# freqs 用 weakref 比对本体,不能用 data_ptr —— 指针会在张量释放后被复用,
+# 可能给另一张 freqs 表返回旧缓存。
+_ROPE = {"key": None, "freqs": None, "val": None}
 
 
 def _ones(dim, dtype, device):
@@ -47,10 +57,11 @@ def action_rms(self, x):
 
 
 def _cos_sin(freqs, f, h, w, start_frame, c, device, dtype):
-    k = (start_frame, f, h, w, c, str(device), dtype, freqs.data_ptr())
-    hit = _ROPE.get(k)
-    if hit is not None:
-        return hit
+    k = (start_frame, f, h, w, c, str(device), dtype,
+         tuple(freqs.shape), freqs.dtype)
+    held = _ROPE["freqs"]
+    if _ROPE["key"] == k and held is not None and held() is freqs:
+        return _ROPE["val"]
     fc = freqs.detach().cpu()
     parts = fc.split([c - 2 * (c // 3), c // 3, c // 3], dim=1)
     fi = torch.cat([
@@ -62,7 +73,7 @@ def _cos_sin(freqs, f, h, w, start_frame, c, device, dtype):
     cos = fi.real.to(torch.float64).repeat_interleave(2, dim=-1).view(1, s, 1, -1)
     sin = fi.imag.to(torch.float64).repeat_interleave(2, dim=-1).view(1, s, 1, -1)
     hit = (cos.to(dtype).to(device), sin.to(dtype).to(device))
-    _ROPE[k] = hit
+    _ROPE.update(key=k, freqs=weakref.ref(freqs), val=hit)
     return hit
 
 
