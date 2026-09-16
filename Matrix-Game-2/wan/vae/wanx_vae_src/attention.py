@@ -56,9 +56,24 @@ def flash_attention(
     # NPU 分支:照抄 MindSpeed-MM examples/self_forcing/npu_adapt/attention.py 的写法
     if torch_npu is not None and torch.npu.is_available():
         import math as _m
+        # 这条分支只覆盖上游在推理里实际走的那条路:无掩码、批内等长。
+        # 下面几个参数都会改变计算语义,而这样调用 npu_fusion_attention 并不实现它们
+        # (上游 CUDA 路径是靠变长打包和 flash_attn 的掩码参数实现的)。
+        # 与其静默算出另一个结果,不如在这里就报出来 —— 口径与 npu_shim.py 一致。
+        if (q_lens is not None or k_lens is not None
+                or causal or window_size != (-1, -1)):
+            raise NotImplementedError(
+                "NPU flash_attention 分支不支持 q_lens/k_lens/causal/window_size;"
+                "调用方传了其中之一,说明语义变了,必须重新核对而不是静默近似。")
+        # deterministic 只影响反向的确定性,不改变前向结果,这里忽略而不报错 ——
+        # 把不影响输出的参数也拦掉,只会无谓挡住训练路径。
         _q = q if q.dtype in (torch.float16, torch.bfloat16) else q.to(dtype)
         _k = k if k.dtype in (torch.float16, torch.bfloat16) else k.to(dtype)
         _v = v if v.dtype in (torch.float16, torch.bfloat16) else v.to(dtype)
+        _q = _q.to(_v.dtype)
+        _k = _k.to(_v.dtype)
+        if q_scale is not None:
+            _q = _q * q_scale          # 与上游同序:先缩放 q,再用 softmax_scale 做注意力
         return torch_npu.npu_fusion_attention(
             _q, _k, _v, _q.shape[2],
             pse=None, padding_mask=None, atten_mask=None,

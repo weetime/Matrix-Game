@@ -7,6 +7,15 @@
 
 因此这里保留 MG2 自己的函数体,只加入昇腾真正需要的那一处修改:
 把三个频率切片显式转成 complex64。其余一字未改。
+
+生效范围(追过调用点,别重复打补丁):
+- `causal_rope_apply` 是推理真正走的那个(causal_model.py:154,kv_cache 非空分支)。
+  但 `npu_fused_ops.install(rope_mode=...)` 会再覆盖同一个符号,所以 serve.py 默认
+  开融合 rope 时,本文件这份 causal 实现是不生效的;只用上游 inference.py /
+  inference_streaming.py 入口(不装融合算子)时才由它兜底。
+- `rope_apply` 只在 causal_model.py:121 的 `kv_cache is None` 分支被调用,
+  而推理路径总会先初始化 KV 缓存(causal_inference.py:241),所以推理时到不了这里。
+  保留它是为了训练/非因果路径也能在昇腾上跑通,不是推理的必需项。
 """
 import torch
 import torch_npu  # noqa: F401
