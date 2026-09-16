@@ -12,6 +12,29 @@ from demo_utils.constant import ZERO_VAE_CACHE
 from tqdm import tqdm
 
 def get_current_action(mode="universal"):
+    # 非交互覆写:上游用 while+input() 逐块要动作,并用裸 except 吞掉 EOF,
+    # 管道输入耗尽后会死循环空转(实测烧一小时 CPU、刷出两千万行提示)。
+    import os as _os
+    _m, _k = _os.environ.get("MG2_MOUSE"), _os.environ.get("MG2_KEY")
+    if _m or _k:
+        _CAM = 0.1
+        _CMAP = {"i": [_CAM, 0], "k": [-_CAM, 0], "j": [0, -_CAM], "l": [0, _CAM], "u": [0, 0]}
+        _KMAP = {"w": [1, 0, 0, 0], "s": [0, 1, 0, 0], "a": [0, 0, 1, 0], "d": [0, 0, 0, 1], "q": [0, 0, 0, 0]}
+        if mode == "gta_drive":
+            _CMAP = {"a": [0, -_CAM], "d": [0, _CAM], "q": [0, 0]}
+            _KMAP = {"w": [1, 0], "s": [0, 1], "q": [0, 0]}
+        elif mode == "templerun":
+            # 神庙逃亡是 7 维键盘,与通用场景的 4 维不通用;落到 4 维会喂错动作
+            _KMAP = {"q": [1, 0, 0, 0, 0, 0, 0], "w": [0, 1, 0, 0, 0, 0, 0],
+                     "s": [0, 0, 1, 0, 0, 0, 0], "z": [0, 0, 0, 1, 0, 0, 0],
+                     "c": [0, 0, 0, 0, 1, 0, 0], "a": [0, 0, 0, 0, 0, 1, 0],
+                     "d": [0, 0, 0, 0, 0, 0, 1]}
+        _mc = torch.tensor(_CMAP[(_m or "u")]).cuda()
+        _kc = torch.tensor(_KMAP[(_k or "q")]).cuda()
+        if mode != "templerun":
+            return {"mouse": _mc, "keyboard": _kc}
+        return {"keyboard": _kc}
+
 
     CAM_VALUE = 0.1
     if mode == 'universal':
@@ -663,7 +686,7 @@ class CausalInferenceStreamingPipeline(torch.nn.Module):
             process_video(video.astype(np.uint8), output_folder+f'/{name}_current.mp4', config, mouse_icon, mouse_scale=0.1, process_icon=False, mode=mode)
             current_start_frame += current_num_frames
 
-            if input("Continue? (Press `n` to break)").strip() == "n":
+            if (not __import__("os").environ.get("MG2_MOUSE") and not __import__("os").environ.get("MG2_KEY")) and (input("Continue? (Press `n` to break)").strip() == "n"):
                 break
                 
         videos_tensor = torch.cat(videos, dim=1)

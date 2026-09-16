@@ -1,6 +1,13 @@
 import os
 import argparse
 import torch
+import torch_npu                                  # NPU
+from torch_npu.contrib import transfer_to_npu     # NPU:把 torch.cuda.* 重定向到 npu
+import npu_patch
+try:
+    _ON_NPU_SKIP_COMPILE = torch_npu.npu.is_available()
+except Exception:
+    _ON_NPU_SKIP_COMPILE = False                                  # NPU:替换 rope_apply / causal_rope_apply
 import numpy as np
 import copy
 
@@ -61,7 +68,9 @@ class InteractiveGameInference:
         current_vae_decoder.to(self.device, torch.float16)
         current_vae_decoder.requires_grad_(False)
         current_vae_decoder.eval()
-        current_vae_decoder.compile(mode="max-autotune-no-cudagraphs")
+        # NPU:昇腾不支持 max-autotune 的代码生成,跳过(本轮不测性能)
+        if not _ON_NPU_SKIP_COMPILE:
+            current_vae_decoder.compile(mode="max-autotune-no-cudagraphs")
         pipeline = CausalInferenceStreamingPipeline(self.config, generator=generator, vae_decoder=current_vae_decoder)
         if self.args.checkpoint_path:
             print("Loading Pretrained Model...")
@@ -156,6 +165,14 @@ def main():
     stop = ''
     while stop != 'n':
         pipeline.generate_videos(mode)
-        stop = input("Press `n` to stop generation: ").strip().lower()
+        # 非交互:按 MG2_ROUNDS 决定轮数(默认 1),避免 EOF 空转
+
+        import os as _os
+
+        _rounds = int(_os.environ.get("MG2_ROUNDS", "1"))
+
+        globals()["_round_i"] = globals().get("_round_i", 0) + 1
+
+        stop = "n" if globals()["_round_i"] >= _rounds else "y"
 if __name__ == "__main__":
     main()
