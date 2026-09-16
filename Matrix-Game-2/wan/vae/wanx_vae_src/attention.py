@@ -1,5 +1,9 @@
 # Copyright 2024-2025 The Alibaba Wan Team Authors. All rights reserved.
 import torch
+try:
+    import torch_npu
+except ImportError:
+    torch_npu = None
 
 try:
     import flash_attn_interface
@@ -49,6 +53,20 @@ def flash_attention(
     deterministic:  bool. If True, slightly slower and uses more memory.
     dtype:          torch.dtype. Apply when dtype of q/k/v is not float16/bfloat16.
     """
+    # NPU 分支:照抄 MindSpeed-MM examples/self_forcing/npu_adapt/attention.py 的写法
+    if torch_npu is not None and torch.npu.is_available():
+        import math as _m
+        _q = q if q.dtype in (torch.float16, torch.bfloat16) else q.to(dtype)
+        _k = k if k.dtype in (torch.float16, torch.bfloat16) else k.to(dtype)
+        _v = v if v.dtype in (torch.float16, torch.bfloat16) else v.to(dtype)
+        return torch_npu.npu_fusion_attention(
+            _q, _k, _v, _q.shape[2],
+            pse=None, padding_mask=None, atten_mask=None,
+            scale=softmax_scale if softmax_scale is not None else 1.0 / _m.sqrt(_q.shape[-1]),
+            keep_prob=1 - dropout_p,
+            input_layout="BSND",
+        )[0]
+
     half_dtypes = (torch.float16, torch.bfloat16)
     assert dtype in half_dtypes
     assert q.device.type == 'cuda' and q.size(-1) <= 256

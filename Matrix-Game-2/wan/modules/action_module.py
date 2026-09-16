@@ -1,6 +1,6 @@
 from typing import Any, List, Tuple, Optional, Union, Dict
 from einops import rearrange
-from flash_attn import flash_attn_func
+from npu_shim import flash_attn_func  # NPU 垫片
 import torch
 import torch.nn as nn
 from .posemb_layers import apply_rotary_emb, get_nd_rotary_pos_embed
@@ -11,13 +11,23 @@ try:
     import flash_attn_interface
     FLASH_ATTN_3_AVAILABLE = True
 except:
-    from flash_attn import flash_attn_func
+    from npu_shim import flash_attn_func  # NPU 垫片
     FLASH_ATTN_3_AVAILABLE = False
 
 
 DISABLE_COMPILE = False  # get os env
-flex_attention = torch.compile(
-    flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
+# NPU:去掉 torch.compile(max-autotune 依赖 CUDA/Triton 代码生成)。
+# 保留 eager flex_attention —— block_mask 语义完全不变,只损失速度,本轮不测性能。
+# 🔴 不能用 torch.cuda.is_available() 做门:transfer_to_npu 会让它在昇腾上返回 True,
+# 门形同虚设,torch.compile 仍生效并炸在 Dynamo(实测 InternalTorchDynamoError)。
+try:
+    import torch_npu as _tn
+    _ON_NPU = _tn.npu.is_available()
+except Exception:
+    _ON_NPU = False
+if not _ON_NPU:
+    flex_attention = torch.compile(
+        flex_attention, dynamic=False, mode="max-autotune-no-cudagraphs")
     
 
 class WanRMSNorm(nn.Module):
